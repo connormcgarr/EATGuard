@@ -119,7 +119,10 @@ HandleIoctlMajorFunciton (
     ULONG ioctlCode;
     PEAT_GUARD_INPUT_DATA inputBuffer;
     SIZE_T inputBufferLength;
-    PEAT_GUARD_INPUT_DATA kernelEatGuardInputData;
+    EAT_GUARD_INPUT_DATA kernelEatGuardInputData;
+    EXCEPTION_RECORD kernelExceptionRecord;
+    EXCEPTION_RECORD kernelSubExceptionRecord;
+    CONTEXT kernelContext;
     EAT_GUARD_OUTPUT_DATA kernelEatGuardOutputData;
     PEAT_GUARD_OUTPUT_DATA userSuppliedOutputBuffer;
     SIZE_T userSuppliedOutputBufferSize;
@@ -132,21 +135,6 @@ HandleIoctlMajorFunciton (
     // Default to unsuccessful in case we have to bail.
     //
     status = STATUS_UNSUCCESSFUL;
-
-    //
-    // Allocate memory for the copy of the EAT_GUARD_INPUT_DATA.
-    //
-    kernelEatGuardInputData = (PEAT_GUARD_INPUT_DATA)ExAllocatePool2(POOL_FLAG_PAGED,
-                                                                     sizeof(EAT_GUARD_INPUT_DATA),
-                                                                     EAT_GUARD_POOL_TAG);
-
-    //
-    // Error handling.
-    //
-    if (kernelEatGuardInputData == NULL)
-    {
-        goto Exit;
-    }
 
     //
     // IoGetCurrentIrpStackLocation doesn't return an
@@ -207,25 +195,34 @@ HandleIoctlMajorFunciton (
                 //
                 ProbeForRead(inputBuffer, inputBufferLength, sizeof(PVOID));
 
+                RtlCopyMemory(&kernelEatGuardInputData, inputBuffer, sizeof(EAT_GUARD_INPUT_DATA));
+
                 //
                 // Verify the exception records.
                 //
-                ProbeForRead(inputBuffer->ExceptionRecord, sizeof(EXCEPTION_RECORD), sizeof(PVOID));
-                
+                ProbeForRead(kernelEatGuardInputData.ExceptionRecord, sizeof(EXCEPTION_RECORD), sizeof(PVOID));
+
+                RtlCopyMemory(&kernelExceptionRecord, kernelEatGuardInputData.ExceptionRecord, sizeof(EXCEPTION_RECORD));
+
+                kernelEatGuardInputData.ExceptionRecord = &kernelExceptionRecord;
+
                 //
                 // Verify more sub-structures.
                 //
-                ProbeForRead(inputBuffer->ExceptionRecord->ExceptionRecord, sizeof(EXCEPTION_RECORD), sizeof(PVOID));
+                ProbeForRead(kernelExceptionRecord.ExceptionRecord, sizeof(EXCEPTION_RECORD), sizeof(PVOID));
+
+                RtlCopyMemory(&kernelSubExceptionRecord, kernelExceptionRecord.ExceptionRecord, sizeof(EXCEPTION_RECORD));
+
+                kernelExceptionRecord.ExceptionRecord = &kernelSubExceptionRecord;
 
                 //
                 // Verify the context record.
                 //
-                ProbeForRead(inputBuffer->ContextRecord, sizeof(CONTEXT), sizeof(PVOID));
+                ProbeForRead(kernelEatGuardInputData.ContextRecord, sizeof(CONTEXT), sizeof(PVOID));
 
-                //
-                // If we made it this far, go ahead and copy the memory to our kernel-mode copy.
-                //
-                RtlCopyMemory(kernelEatGuardInputData, inputBuffer, sizeof(EAT_GUARD_INPUT_DATA));
+                RtlCopyMemory(&kernelContext, kernelEatGuardInputData.ContextRecord, sizeof(CONTEXT));
+
+                kernelEatGuardInputData.ContextRecord = &kernelContext;
             }
             __except (EXCEPTION_EXECUTE_HANDLER)
             {
@@ -235,7 +232,7 @@ HandleIoctlMajorFunciton (
             //
             // Perform the actual EATGuard analysis.
             //
-            status = PerformEatGuardAnalysis(kernelEatGuardInputData, &kernelEatGuardOutputData);
+            status = PerformEatGuardAnalysis(&kernelEatGuardInputData, &kernelEatGuardOutputData);
 
             //
             // Ensure that these output buffer resides in user-mode.
